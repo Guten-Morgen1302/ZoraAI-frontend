@@ -78,6 +78,8 @@ export default function EmailAnalyzerPage() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<EmailAnalysisResult | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [selectedHistoryRequestId, setSelectedHistoryRequestId] = useState<string | null>(null);
+  const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("http://localhost:8000/text/email/history", { credentials: "include" })
@@ -86,13 +88,33 @@ export default function EmailAnalyzerPage() {
       .catch(() => {});
   }, []);
 
+  const loadHistoryDetail = async (requestId: string) => {
+    setHistoryLoadingId(requestId);
+    setError("");
+
+    try {
+      const res = await fetch(`http://localhost:8000/text/email/history/${requestId}`, { credentials: "include" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || `Failed to load history detail (${res.status})`);
+      }
+      const data: EmailAnalysisResult = await res.json();
+      setResult(data);
+      setSelectedHistoryRequestId(requestId);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load email history detail");
+    } finally {
+      setHistoryLoadingId(null);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!body.trim() || !sender.trim()) return;
     setLoading(true);
     setError("");
     setResult(null);
     try {
-      const res = await fetch("http://localhost:8000/text/email/analyze/extension", {
+      const res = await fetch("http://localhost:8000/text/email/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -109,6 +131,7 @@ export default function EmailAnalyzerPage() {
       }
       const data: EmailAnalysisResult = await res.json();
       setResult(data);
+      setSelectedHistoryRequestId(null);
       fetch("http://localhost:8000/text/email/history", { credentials: "include" })
         .then((r) => (r.ok ? r.json() : []))
         .then(setHistory)
@@ -310,7 +333,16 @@ export default function EmailAnalyzerPage() {
           ) : (
             <div className="space-y-2">
               {history.map((item) => (
-                <div key={item.request_id} className="px-3 py-3 rounded-xl bg-white/[0.02] border border-white/[0.04] hover:border-white/[0.08] transition-colors">
+                <button
+                  key={item.request_id}
+                  type="button"
+                  onClick={() => loadHistoryDetail(item.request_id)}
+                  className={`w-full text-left px-3 py-3 rounded-xl bg-white/[0.02] border transition-colors ${
+                    selectedHistoryRequestId === item.request_id
+                      ? "border-white/[0.18]"
+                      : "border-white/[0.04] hover:border-white/[0.08]"
+                  }`}
+                >
                   <p className="text-xs text-white/50 font-medium truncate mb-1">{item.subject || item.text}</p>
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] text-white/20">{item.created_at ? new Date(item.created_at).toLocaleDateString() : ""}</span>
@@ -318,7 +350,10 @@ export default function EmailAnalyzerPage() {
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${riskBadgeColor(item.risk_score)}`}>{(item.risk_score * 100).toFixed(0)}%</span>
                     )}
                   </div>
-                </div>
+                  {historyLoadingId === item.request_id && (
+                    <p className="text-[10px] text-white/30 mt-2">Loading analysis...</p>
+                  )}
+                </button>
               ))}
             </div>
           )}

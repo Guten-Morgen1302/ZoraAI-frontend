@@ -96,6 +96,8 @@ export default function SMSAnalyzerPage() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [selectedHistoryRequestId, setSelectedHistoryRequestId] = useState<string | null>(null);
+  const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("http://localhost:8000/text/sms/history", { credentials: "include" })
@@ -103,6 +105,26 @@ export default function SMSAnalyzerPage() {
       .then(setHistory)
       .catch(() => {});
   }, []);
+
+  const loadHistoryDetail = async (requestId: string) => {
+    setHistoryLoadingId(requestId);
+    setError("");
+
+    try {
+      const res = await fetch(`http://localhost:8000/text/sms/history/${requestId}`, { credentials: "include" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || `Failed to load history detail (${res.status})`);
+      }
+      const data: AnalysisResult = await res.json();
+      setResult(data);
+      setSelectedHistoryRequestId(requestId);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load SMS history detail");
+    } finally {
+      setHistoryLoadingId(null);
+    }
+  };
 
   const handleAnalyze = async () => {
     if (!text.trim()) return;
@@ -122,6 +144,7 @@ export default function SMSAnalyzerPage() {
       }
       const data: AnalysisResult = await res.json();
       setResult(data);
+      setSelectedHistoryRequestId(data.request_id);
       // Refresh history
       fetch("http://localhost:8000/text/sms/history", { credentials: "include" })
         .then((r) => (r.ok ? r.json() : []))
@@ -339,7 +362,16 @@ export default function SMSAnalyzerPage() {
           ) : (
             <div className="space-y-2">
               {history.map((item) => (
-                <div key={item.request_id} className="px-3 py-3 rounded-xl bg-white/[0.02] border border-white/[0.04] hover:border-white/[0.08] transition-colors">
+                <button
+                  key={item.request_id}
+                  type="button"
+                  onClick={() => loadHistoryDetail(item.request_id)}
+                  className={`w-full text-left px-3 py-3 rounded-xl bg-white/[0.02] border transition-colors ${
+                    selectedHistoryRequestId === item.request_id
+                      ? "border-white/[0.18]"
+                      : "border-white/[0.04] hover:border-white/[0.08]"
+                  }`}
+                >
                   <p className="text-xs text-white/50 font-medium truncate mb-1.5">{item.text}</p>
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] text-white/20">{item.created_at ? new Date(item.created_at).toLocaleDateString() : ""}</span>
@@ -347,7 +379,10 @@ export default function SMSAnalyzerPage() {
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${riskBadgeColor(item.risk_score)}`}>{(item.risk_score * 100).toFixed(0)}%</span>
                     )}
                   </div>
-                </div>
+                  {historyLoadingId === item.request_id && (
+                    <p className="text-[10px] text-white/30 mt-2">Loading analysis...</p>
+                  )}
+                </button>
               ))}
             </div>
           )}

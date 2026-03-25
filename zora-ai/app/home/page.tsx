@@ -44,8 +44,8 @@ const modules = [
   {
     name: "URL Scanner",
     description: "Multi-phase URL phishing — feature extraction, TLS intel, homoglyph detection, Playwright sandbox, ML risk scoring.",
-    href: "#",
-    live: false,
+    href: "/home/url",
+    live: true,
     icon: (
       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.86-2.556a4.5 4.5 0 0 0-1.242-7.244l4.5-4.5a4.5 4.5 0 0 1 6.364 6.364l-1.757 1.757" />
@@ -55,8 +55,8 @@ const modules = [
   {
     name: "Attachment Sandbox",
     description: "Static file analysis — YARA signatures, ClamAV antivirus, LightGBM PE classifier, type-specific parsers.",
-    href: "#",
-    live: false,
+    href: "/home/attachments",
+    live: true,
     icon: (
       <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" />
@@ -66,8 +66,8 @@ const modules = [
   {
     name: "Voice Deepfake",
     description: "Audio deepfake detection with ResNet-BiLSTM, Whisper transcription, MFCC analysis, LLM fraud reasoning.",
-    href: "#",
-    live: false,
+    href: "/home/voice",
+    live: true,
     icon: (
       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" />
