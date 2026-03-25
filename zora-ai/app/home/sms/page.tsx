@@ -89,6 +89,9 @@ interface HistoryItem {
   fraud_type: string | null;
 }
 
+type FeedbackLabel = "scam" | "safe";
+type FeedbackType = "correct" | "incorrect" | "modified";
+
 export default function SMSAnalyzerPage() {
   const [text, setText] = useState("");
   const [includeLLM, setIncludeLLM] = useState(true);
@@ -98,6 +101,21 @@ export default function SMSAnalyzerPage() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [selectedHistoryRequestId, setSelectedHistoryRequestId] = useState<string | null>(null);
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackError, setFeedbackError] = useState("");
+  const [feedbackSuccess, setFeedbackSuccess] = useState("");
+  const [humanLabel, setHumanLabel] = useState<FeedbackLabel>("scam");
+  const [feedbackType, setFeedbackType] = useState<FeedbackType>("incorrect");
+  const [feedbackNotes, setFeedbackNotes] = useState("");
+
+  const inferHumanLabelFromPrediction = (predictionLabel?: string): FeedbackLabel => {
+    const normalized = (predictionLabel || "").trim().toLowerCase();
+    if (normalized === "safe" || normalized === "ham" || normalized === "legitimate") {
+      return "safe";
+    }
+    return "scam";
+  };
 
   useEffect(() => {
     fetch("http://localhost:8000/text/sms/history", { credentials: "include" })
@@ -145,6 +163,7 @@ export default function SMSAnalyzerPage() {
       const data: AnalysisResult = await res.json();
       setResult(data);
       setSelectedHistoryRequestId(data.request_id);
+      setFeedbackSuccess("");
       // Refresh history
       fetch("http://localhost:8000/text/sms/history", { credentials: "include" })
         .then((r) => (r.ok ? r.json() : []))
@@ -154,6 +173,51 @@ export default function SMSAnalyzerPage() {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openFeedbackModal = () => {
+    if (!result) return;
+    setHumanLabel(inferHumanLabelFromPrediction(result.prediction.label));
+    setFeedbackType("incorrect");
+    setFeedbackNotes("");
+    setFeedbackError("");
+    setFeedbackOpen(true);
+  };
+
+  const handleSubmitFeedback = async () => {
+    if (!result) return;
+    setFeedbackSubmitting(true);
+    setFeedbackError("");
+    try {
+      const payload = {
+        analysis_id: result.request_id,
+        source: "sms",
+        human_label: humanLabel,
+        model_prediction: result.prediction.label,
+        model_confidence: result.prediction.confidence,
+        feedback_type: feedbackType,
+        notes: feedbackNotes.trim() || null,
+      };
+
+      const res = await fetch("http://localhost:8000/text/sms/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || `Failed to submit feedback (${res.status})`);
+      }
+
+      setFeedbackOpen(false);
+      setFeedbackSuccess("Thanks. Your feedback was recorded for model improvement.");
+    } catch (err: unknown) {
+      setFeedbackError(err instanceof Error ? err.message : "Failed to submit feedback");
+    } finally {
+      setFeedbackSubmitting(false);
     }
   };
 
@@ -259,6 +323,12 @@ export default function SMSAnalyzerPage() {
         {/* Results */}
         {result && (
           <section className="space-y-6">
+            {feedbackSuccess && (
+              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-emerald-300 text-sm font-medium">
+                {feedbackSuccess}
+              </div>
+            )}
+
             {/* Risk Overview */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-6 text-center">
@@ -348,6 +418,20 @@ export default function SMSAnalyzerPage() {
               </div>
             </div>
 
+            <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-white/80">Model got this wrong?</p>
+                <p className="text-xs text-white/40">Report incorrect or modified decisions to improve future detections.</p>
+              </div>
+              <button
+                type="button"
+                onClick={openFeedbackModal}
+                className="px-4 py-2.5 rounded-xl bg-white text-black text-xs font-bold uppercase tracking-wider hover:bg-white/90 transition"
+              >
+                Report Decision Issue
+              </button>
+            </div>
+
             <div className="text-center"><p className="text-[10px] text-white/20 font-mono tracking-wider">REQUEST ID: {result.request_id}</p></div>
           </section>
         )}
@@ -388,6 +472,95 @@ export default function SMSAnalyzerPage() {
           )}
         </div>
       </aside>
+
+      {feedbackOpen && result && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/70" onClick={() => setFeedbackOpen(false)} />
+          <div className="relative w-full max-w-xl rounded-2xl border border-white/[0.12] bg-[#050505] p-6 shadow-2xl">
+            <h3 className="text-lg font-bold tracking-tight mb-1">SMS Feedback</h3>
+            <p className="text-xs text-white/45 mb-5">Only your correction fields are editable. Analysis fields are auto-filled from this result.</p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+              <div>
+                <p className="text-[11px] text-white/35 uppercase tracking-wider mb-1">Analysis ID</p>
+                <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-white/70 font-mono break-all">{result.request_id}</div>
+              </div>
+              <div>
+                <p className="text-[11px] text-white/35 uppercase tracking-wider mb-1">Source</p>
+                <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-white/70">sms</div>
+              </div>
+              <div>
+                <p className="text-[11px] text-white/35 uppercase tracking-wider mb-1">Model Prediction</p>
+                <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-white/70">{result.prediction.label}</div>
+              </div>
+              <div>
+                <p className="text-[11px] text-white/35 uppercase tracking-wider mb-1">Model Confidence</p>
+                <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-white/70">{result.prediction.confidence.toFixed(4)}</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+              <label className="block">
+                <span className="text-[11px] text-white/35 uppercase tracking-wider">Human Label</span>
+                <select
+                  value={humanLabel}
+                  onChange={(e) => setHumanLabel(e.target.value as FeedbackLabel)}
+                  className="mt-1 w-full rounded-lg border border-white/[0.1] bg-black px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30"
+                >
+                  <option value="scam">scam</option>
+                  <option value="safe">safe</option>
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="text-[11px] text-white/35 uppercase tracking-wider">Feedback Type</span>
+                <select
+                  value={feedbackType}
+                  onChange={(e) => setFeedbackType(e.target.value as FeedbackType)}
+                  className="mt-1 w-full rounded-lg border border-white/[0.1] bg-black px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30"
+                >
+                  <option value="correct">correct</option>
+                  <option value="incorrect">incorrect</option>
+                  <option value="modified">modified</option>
+                </select>
+              </label>
+            </div>
+
+            <label className="block mb-4">
+              <span className="text-[11px] text-white/35 uppercase tracking-wider">Notes (Optional)</span>
+              <textarea
+                value={feedbackNotes}
+                onChange={(e) => setFeedbackNotes(e.target.value)}
+                rows={3}
+                placeholder="Why is this decision wrong or how should it be corrected?"
+                className="mt-1 w-full rounded-lg border border-white/[0.1] bg-black px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-white/30 resize-none"
+              />
+            </label>
+
+            {feedbackError && (
+              <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">{feedbackError}</div>
+            )}
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setFeedbackOpen(false)}
+                className="px-4 py-2 rounded-xl border border-white/[0.16] text-white/70 text-sm font-medium hover:bg-white/[0.05] transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmitFeedback}
+                disabled={feedbackSubmitting}
+                className="px-4 py-2 rounded-xl bg-white text-black text-sm font-bold hover:bg-white/90 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {feedbackSubmitting ? "Submitting..." : "Submit Feedback"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
