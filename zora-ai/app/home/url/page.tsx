@@ -87,6 +87,13 @@ interface URLHistoryItem {
   phishing_probability: number | null;
 }
 
+interface URLFeedbackResponse {
+  id: number;
+  analysis_id: string;
+  status: string;
+  created_at: string;
+}
+
 export default function URLAnalyzerPage() {
   const [url, setUrl] = useState("");
   const [withLlmExplanation, setWithLlmExplanation] = useState(true);
@@ -96,6 +103,13 @@ export default function URLAnalyzerPage() {
   const [history, setHistory] = useState<URLHistoryItem[]>([]);
   const [selectedHistoryRequestId, setSelectedHistoryRequestId] = useState<string | null>(null);
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
+  const [showFeedbackForm, setShowFeedbackForm] = useState(false);
+  const [feedbackHumanLabel, setFeedbackHumanLabel] = useState<"phishing" | "suspicious" | "safe">("safe");
+  const [feedbackPredictionType, setFeedbackPredictionType] = useState<"wrong" | "modified">("wrong");
+  const [feedbackNotes, setFeedbackNotes] = useState("");
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [feedbackError, setFeedbackError] = useState("");
 
   useEffect(() => {
     fetch("http://localhost:8000/url/history", { credentials: "include" })
@@ -117,6 +131,10 @@ export default function URLAnalyzerPage() {
       const data: URLAnalyzeResult = await res.json();
       setResult(data);
       setSelectedHistoryRequestId(requestId);
+      setShowFeedbackForm(false);
+      setFeedbackMessage("");
+      setFeedbackError("");
+      setFeedbackNotes("");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load URL history detail");
     } finally {
@@ -150,6 +168,10 @@ export default function URLAnalyzerPage() {
       const data: URLAnalyzeResult = await res.json();
       setResult(data);
       setSelectedHistoryRequestId(null);
+      setShowFeedbackForm(false);
+      setFeedbackMessage("");
+      setFeedbackError("");
+      setFeedbackNotes("");
       fetch("http://localhost:8000/url/history", { credentials: "include" })
         .then((r) => (r.ok ? r.json() : []))
         .then(setHistory)
@@ -158,6 +180,48 @@ export default function URLAnalyzerPage() {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSubmitFeedback = async () => {
+    if (!result?.request_id || feedbackSubmitting) {
+      return;
+    }
+
+    setFeedbackSubmitting(true);
+    setFeedbackMessage("");
+    setFeedbackError("");
+
+    try {
+      const res = await fetch("http://localhost:8000/url/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          analysis_id: result.request_id,
+          human_label: feedbackHumanLabel,
+          prediction_type: feedbackPredictionType,
+          model_prediction: asString(result.llm_label, result.risk_level),
+          model_risk_score: result.risk_score,
+          model_phishing_probability: result.phishing_probability,
+          normalized_url: result.url,
+          notes: feedbackNotes.trim() || null,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || `Failed to submit feedback (${res.status})`);
+      }
+
+      const data: URLFeedbackResponse = await res.json();
+      setFeedbackMessage(`Feedback saved (id: ${data.id})`);
+      setFeedbackNotes("");
+      setShowFeedbackForm(false);
+    } catch (err: unknown) {
+      setFeedbackError(err instanceof Error ? err.message : "Failed to submit feedback");
+    } finally {
+      setFeedbackSubmitting(false);
     }
   };
 
@@ -340,7 +404,20 @@ export default function URLAnalyzerPage() {
           </div>
 
           <div className="rounded-2xl border border-white/8 bg-white/2 p-6">
-            <h3 className="text-sm font-bold tracking-wider uppercase text-white/50 mb-4">URL Verdict</h3>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <h3 className="text-sm font-bold tracking-wider uppercase text-white/50">URL Verdict</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowFeedbackForm((prev) => !prev);
+                  setFeedbackMessage("");
+                  setFeedbackError("");
+                }}
+                className="px-3 py-1.5 rounded-lg border border-white/20 text-xs font-semibold text-white/70 hover:text-white hover:border-white/40 transition-colors"
+              >
+                {showFeedbackForm ? "Close Feedback" : "Give Feedback"}
+              </button>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div>
                 <p className="text-[10px] text-white/30 uppercase tracking-wider font-semibold mb-1">Submitted URL</p>
@@ -355,6 +432,74 @@ export default function URLAnalyzerPage() {
                 </p>
               </div>
             </div>
+
+            {showFeedbackForm && (
+              <div className="mt-5 rounded-xl border border-white/10 bg-black/30 p-4 space-y-4">
+                <p className="text-xs text-white/40 font-semibold uppercase tracking-wider">Feedback for analysis {result.request_id}</p>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] text-white/35 uppercase tracking-wider font-semibold mb-1.5 block">Human Label</label>
+                    <select
+                      value={feedbackHumanLabel}
+                      onChange={(e) => setFeedbackHumanLabel(e.target.value as "phishing" | "suspicious" | "safe")}
+                      className="w-full bg-transparent border border-white/12 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30"
+                    >
+                      <option value="phishing" className="bg-black">Phishing</option>
+                      <option value="suspicious" className="bg-black">Suspicious</option>
+                      <option value="safe" className="bg-black">Safe</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-white/35 uppercase tracking-wider font-semibold mb-1.5 block">Prediction Type</label>
+                    <select
+                      value={feedbackPredictionType}
+                      onChange={(e) => setFeedbackPredictionType(e.target.value as "wrong" | "modified")}
+                      className="w-full bg-transparent border border-white/12 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30"
+                    >
+                      <option value="wrong" className="bg-black">Wrong</option>
+                      <option value="modified" className="bg-black">Modified</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/35 uppercase tracking-wider font-semibold mb-1.5 block">Notes (optional)</label>
+                  <textarea
+                    value={feedbackNotes}
+                    onChange={(e) => setFeedbackNotes(e.target.value)}
+                    rows={3}
+                    placeholder="Add why this prediction should be corrected or refined"
+                    className="w-full bg-transparent border border-white/12 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-white/30 resize-y"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowFeedbackForm(false);
+                      setFeedbackError("");
+                    }}
+                    className="px-3 py-2 rounded-lg border border-white/15 text-xs font-semibold text-white/70 hover:border-white/30"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSubmitFeedback}
+                    disabled={feedbackSubmitting}
+                    className="px-4 py-2 rounded-lg bg-white text-black text-xs font-bold disabled:opacity-40"
+                  >
+                    {feedbackSubmitting ? "Submitting..." : "Submit Feedback"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {feedbackMessage && <p className="mt-4 text-xs text-emerald-400 font-semibold">{feedbackMessage}</p>}
+            {feedbackError && <p className="mt-4 text-xs text-red-400 font-semibold">{feedbackError}</p>}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
