@@ -31,6 +31,12 @@ interface AttachmentAnalyzeResponse {
   final_verdict: string;
   engines: Record<string, AttachmentEngineResult>;
   features: Record<string, unknown>;
+  llm_enhanced?: boolean;
+  llm_label?: string | null;
+  llm_confidence?: number | null;
+  llm_explanation?: string | null;
+  llm_key_indicators?: string[];
+  llm_recommendations?: string[];
 }
 
 interface AttachmentHistoryItem {
@@ -98,6 +104,8 @@ function isLikelyScoreKey(key: string) {
 
 export default function AttachmentAnalyzerPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [withLlmExplanation, setWithLlmExplanation] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<AttachmentAnalyzeResponse | null>(null);
@@ -172,6 +180,28 @@ export default function AttachmentAnalyzerPage() {
     return normalized.slice(0, 10);
   }, [result]);
 
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      setSelectedFile(e.dataTransfer.files[0]);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!selectedFile) {
       setError("Please select a file first.");
@@ -185,6 +215,7 @@ export default function AttachmentAnalyzerPage() {
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
+      formData.append("with_llm_explanation", withLlmExplanation.toString());
 
       const res = await fetch("http://localhost:8000/attachment/analyze", {
         method: "POST",
@@ -304,21 +335,74 @@ export default function AttachmentAnalyzerPage() {
         </p>
 
         <div className="rounded-2xl border border-white/8 bg-white/2 p-6 space-y-4">
-          <div>
-            <label className="text-xs text-white/40 font-semibold uppercase tracking-wider mb-1.5 block">Attachment File</label>
+          <div 
+            className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer
+              ${isDragging ? 'border-emerald-500 bg-emerald-500/10' : 'border-white/20 hover:border-white/40 bg-white/5'}
+            `}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => document.getElementById('file-upload')?.click()}
+          >
+            <div className="flex flex-col items-center justify-center space-y-3">
+              <div className="p-3 bg-white/10 rounded-full">
+                <svg className="w-6 h-6 text-white/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-white/80">
+                  {isDragging ? 'Drop file here components...' : 'Click to upload or drag and drop'}
+                </p>
+                <p className="text-xs text-white/50 mt-1">
+                  Supports binaries, documents, archives and PE files. Max size: 100MB.
+                </p>
+              </div>
+            </div>
             <input
+              id="file-upload"
               type="file"
+              className="hidden"
               onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-              className="block w-full text-sm text-white/75 file:mr-4 file:rounded-lg file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-white/15"
             />
-            {selectedFile && (
-              <p className="mt-2 text-xs text-white/45">
-                Selected: <span className="text-white/70">{selectedFile.name}</span> ({bytesToHuman(selectedFile.size)})
-              </p>
-            )}
           </div>
+          
+          {selectedFile && (
+            <div className="flex items-center justify-between bg-black/40 border border-white/10 rounded-xl p-4">
+              <div className="flex items-center gap-3">
+                <svg className="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <div>
+                  <p className="text-sm font-medium text-white/90 truncate max-w-[300px]">{selectedFile.name}</p>
+                  <p className="text-xs text-white/40">{bytesToHuman(selectedFile.size)}</p>
+                </div>
+              </div>
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedFile(null);
+                }}
+                className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-white/50 hover:text-white"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          )}
 
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-between">
+            <label className="flex items-center gap-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={withLlmExplanation}
+                onChange={(e) => setWithLlmExplanation(e.target.checked)}
+                className="w-4 h-4 rounded border-white/20 bg-white/5 accent-emerald-500"
+              />
+              <span className="text-xs text-white/50 font-medium">Include LLM Explanation</span>
+            </label>
+
             <button
               onClick={handleAnalyze}
               disabled={loading || !selectedFile}
@@ -430,6 +514,53 @@ export default function AttachmentAnalyzerPage() {
               <div className="h-80">
                 <Bar data={featureBarData} options={featureBarOptions} />
               </div>
+            </div>
+          )}
+
+          {result.llm_enhanced && result.llm_explanation && (
+            <div className="rounded-2xl border border-white/8 bg-white/2 p-6 space-y-4">
+              <h3 className="text-sm font-bold tracking-wider uppercase text-white/50">LLM Explanation</h3>
+              
+              <div className="text-sm text-white/65 leading-relaxed bg-white/2 rounded-xl border border-white/6 p-4">
+                {result.llm_explanation}
+              </div>
+
+              {result.llm_label && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-white/45 uppercase tracking-wider font-semibold">Verdict:</span>
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                    result.llm_label.toLowerCase() === 'malicious' || result.llm_label.toLowerCase() === 'suspicious' 
+                    ? 'bg-red-500/15 text-red-400' 
+                    : 'bg-emerald-500/15 text-emerald-400'
+                  }`}>
+                    {result.llm_label.toUpperCase()} {result.llm_confidence ? `(${(result.llm_confidence * 100).toFixed(1)}%)` : ''}
+                  </span>
+                </div>
+              )}
+
+              {result.llm_key_indicators && result.llm_key_indicators.length > 0 && (
+                <div>
+                  <p className="text-xs text-white/45 uppercase tracking-wider font-semibold mb-2">Key Indicators</p>
+                  <div className="flex flex-wrap gap-2">
+                    {result.llm_key_indicators.map((item, idx) => (
+                      <span key={`${item}-${idx}`} className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-emerald-500/12 text-emerald-300 border border-emerald-500/20">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {result.llm_recommendations && result.llm_recommendations.length > 0 && (
+                <div>
+                  <p className="text-xs text-white/45 uppercase tracking-wider font-semibold mb-2">Recommendations</p>
+                  <ul className="space-y-1">
+                    {result.llm_recommendations.map((item, idx) => (
+                      <li key={`${item}-${idx}`} className="text-sm text-white/60">- {item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
 
