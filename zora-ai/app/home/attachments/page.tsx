@@ -112,6 +112,9 @@ export default function AttachmentAnalyzerPage() {
   const [history, setHistory] = useState<AttachmentHistoryItem[]>([]);
   const [selectedHistoryRequestId, setSelectedHistoryRequestId] = useState<string | null>(null);
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
+  const [historyDeletingId, setHistoryDeletingId] = useState<string | null>(null);
+  const [historyClearing, setHistoryClearing] = useState(false);
+  const [pendingHistoryAction, setPendingHistoryAction] = useState<{ type: "delete" | "clear"; requestId?: string } | null>(null);
 
   useEffect(() => {
     fetch("http://localhost:8000/attachment/history", { credentials: "include" })
@@ -138,6 +141,76 @@ export default function AttachmentAnalyzerPage() {
     } finally {
       setHistoryLoadingId(null);
     }
+  };
+
+  const executeDeleteHistoryItem = async (requestId: string) => {
+    setHistoryDeletingId(requestId);
+    setError("");
+    try {
+      const res = await fetch(`http://localhost:8000/attachment/history/${requestId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || `Failed to delete history item (${res.status})`);
+      }
+
+      setHistory((prev) => prev.filter((item) => item.request_id !== requestId));
+      if (selectedHistoryRequestId === requestId) {
+        setSelectedHistoryRequestId(null);
+        setResult(null);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to delete history item");
+    } finally {
+      setHistoryDeletingId(null);
+    }
+  };
+
+  const executeClearHistory = async () => {
+    setHistoryClearing(true);
+    setError("");
+    try {
+      const res = await fetch("http://localhost:8000/attachment/history", {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || `Failed to clear history (${res.status})`);
+      }
+
+      setHistory([]);
+      setSelectedHistoryRequestId(null);
+      setResult(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to clear history");
+    } finally {
+      setHistoryClearing(false);
+    }
+  };
+
+  const handleDeleteHistoryItem = (requestId: string) => {
+    if (historyDeletingId || historyClearing) return;
+    setPendingHistoryAction({ type: "delete", requestId });
+  };
+
+  const handleClearHistory = () => {
+    if (historyClearing || historyDeletingId) return;
+    setPendingHistoryAction({ type: "clear" });
+  };
+
+  const confirmPendingHistoryAction = async () => {
+    if (!pendingHistoryAction) return;
+
+    if (pendingHistoryAction.type === "delete" && pendingHistoryAction.requestId) {
+      await executeDeleteHistoryItem(pendingHistoryAction.requestId);
+    }
+    if (pendingHistoryAction.type === "clear") {
+      await executeClearHistory();
+    }
+    setPendingHistoryAction(null);
   };
 
   const engineEntries = useMemo(() => {
@@ -577,23 +650,77 @@ export default function AttachmentAnalyzerPage() {
 
       <aside className="w-72 shrink-0 border-l border-white/6 bg-black/50 overflow-y-auto hidden xl:block">
         <div className="p-5">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-white/30 mb-4">Recent Attachment Scans</h3>
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-white/30">Recent Attachment Scans</h3>
+            <button
+              type="button"
+              onClick={handleClearHistory}
+              disabled={history.length === 0 || historyClearing || historyDeletingId !== null}
+              className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-white/15 text-white/55 hover:text-white/75 hover:border-white/25 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {historyClearing ? "Clearing..." : "Clear"}
+            </button>
+          </div>
+          {pendingHistoryAction && (
+            <div className="mb-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3">
+              <p className="text-[11px] text-amber-200 font-medium mb-2">
+                {pendingHistoryAction.type === "clear" ? "Clear all attachment scan history?" : "Delete this attachment scan from history?"}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={confirmPendingHistoryAction}
+                  className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md bg-amber-400 text-black"
+                >
+                  Confirm
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingHistoryAction(null)}
+                  className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-white/20 text-white/70"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           {history.length === 0 ? (
             <p className="text-xs text-white/20 font-medium">No past analyses yet.</p>
           ) : (
             <div className="space-y-2">
               {history.map((item) => (
-                <button
+                <div
                   key={item.request_id}
-                  type="button"
-                  onClick={() => loadHistoryDetail(item.request_id)}
-                  className={`w-full text-left px-3 py-3 rounded-xl bg-white/2 border transition-colors ${
+                  className={`px-3 py-3 rounded-xl bg-white/2 border transition-colors ${
                     selectedHistoryRequestId === item.request_id
                       ? "border-white/20"
                       : "border-white/5 hover:border-white/10"
                   }`}
                 >
-                  <p className="text-xs text-white/55 font-medium truncate mb-1">{item.filename}</p>
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <button
+                      type="button"
+                      onClick={() => loadHistoryDetail(item.request_id)}
+                      className="text-xs text-white/55 font-medium truncate text-left hover:text-white/80"
+                    >
+                      {item.filename}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteHistoryItem(item.request_id)}
+                      disabled={historyDeletingId === item.request_id || historyClearing}
+                      className="shrink-0 text-white/35 hover:text-red-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                      aria-label="Delete scan"
+                    >
+                      {historyDeletingId === item.request_id ? (
+                        <span className="text-[9px]">...</span>
+                      ) : (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7h6m-5-3h4a1 1 0 011 1v2H9V5a1 1 0 011-1z" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[10px] text-white/25">{bytesToHuman(item.file_size)}</span>
                     {item.final_verdict && (
@@ -606,7 +733,7 @@ export default function AttachmentAnalyzerPage() {
                   {historyLoadingId === item.request_id && (
                     <p className="text-[10px] text-white/35 mt-2">Loading analysis...</p>
                   )}
-                </button>
+                </div>
               ))}
             </div>
           )}
