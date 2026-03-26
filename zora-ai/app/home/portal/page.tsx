@@ -19,6 +19,11 @@ import {
   ChevronRight,
   ExternalLink,
   FileWarning,
+  PanelRightClose,
+  PanelRightOpen,
+  Pencil,
+  Trash2,
+  Check,
 } from "lucide-react";
 import {
   usePortalStore,
@@ -28,6 +33,13 @@ import {
   type PipelineResult,
 } from "@/lib/portalStore";
 import { orchestrate } from "@/lib/orchestrator";
+import {
+  createPortalChat,
+  deletePortalChat,
+  getPortalChat,
+  getPortalChats,
+  updatePortalChat,
+} from "@/lib/api";
 
 // ━━━━━━━━━━━━━━━━━━━━━ Helpers ━━━━━━━━━━━━━━━━━━━━━
 
@@ -123,6 +135,72 @@ function getPipelineLabel(type: string) {
     case "voice": return "🎤 Voice Analysis";
     default: return "Analysis";
   }
+}
+
+interface PortalChatListItem {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  preview: string | null;
+}
+
+interface PortalChatDetail {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: Record<string, unknown>[];
+}
+
+function deserializeMessages(raw: Record<string, unknown>[]): Message[] {
+  return raw
+    .filter((m) => typeof m === "object" && m !== null)
+    .map((m) => {
+      const msg = m as Record<string, unknown>;
+      const id = typeof msg.id === "string" && msg.id.trim() ? msg.id : uuid();
+      const role = msg.role === "user" || msg.role === "thinking" || msg.role === "result" ? msg.role : "thinking";
+      const ts = msg.timestamp;
+      const parsedTs = typeof ts === "string" || typeof ts === "number" ? new Date(ts) : new Date();
+      return {
+        id,
+        role,
+        jobs: Array.isArray(msg.jobs) ? (msg.jobs as AnalysisJob[]) : undefined,
+        result: typeof msg.result === "object" && msg.result !== null ? (msg.result as Message["result"]) : undefined,
+        thinkingText: typeof msg.thinkingText === "string" ? msg.thinkingText : undefined,
+        timestamp: Number.isNaN(parsedTs.getTime()) ? new Date() : parsedTs,
+      };
+    });
+}
+
+function serializeMessages(messages: Message[]): Record<string, unknown>[] {
+  return messages.map((message) => ({
+    ...message,
+    jobs: message.jobs?.map((job) => {
+      const { file: _file, ...rest } = job;
+      return rest;
+    }),
+    timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : message.timestamp,
+  })) as Record<string, unknown>[];
+}
+
+function deriveTitleFromMessages(messages: Message[]): string {
+  const firstUser = messages.find((m) => m.role === "user" && (m.jobs?.length ?? 0) > 0);
+  if (!firstUser || !firstUser.jobs || firstUser.jobs.length === 0) return "New Chat";
+  const raw = firstUser.jobs[0].label?.trim() || "New Chat";
+  return raw.length > 42 ? `${raw.slice(0, 42)}...` : raw;
+}
+
+function formatChatDate(value: string): string {
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return "";
+  return dt.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━ Attachment Picker ━━━━━━━━━━━━━━━━━━━━━
@@ -605,6 +683,7 @@ export default function PortalPage() {
     removeJob,
     clearJobs,
     addMessage,
+    setMessages,
     updateThinkingMessage,
     replaceThinkingWithResult,
     setAnalyzing,
@@ -612,8 +691,118 @@ export default function PortalPage() {
 
   const [inputText, setInputText] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [chats, setChats] = useState<PortalChatListItem[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [chatBootstrapped, setChatBootstrapped] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const feedRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const refreshChats = useCallback(async (): Promise<PortalChatListItem[]> => {
+    const response = await getPortalChats();
+    const list = (response.data ?? []) as PortalChatListItem[];
+    setChats(list);
+    return list;
+  }, []);
+
+  const openChat = useCallback(async (chatId: string) => {
+    const response = await getPortalChat(chatId);
+    const chat = response.data as PortalChatDetail;
+    setMessages(deserializeMessages(chat.messages || []));
+    setActiveChatId(chat.id);
+  }, [setMessages]);
+
+  const createNewChat = useCallback(async () => {
+    const response = await createPortalChat({ title: "New Chat", messages: [] });
+    const chat = response.data as PortalChatDetail;
+    setActiveChatId(chat.id);
+    setMessages([]);
+    await refreshChats();
+    return chat.id;
+  }, [refreshChats, setMessages]);
+
+  const ensureActiveChat = useCallback(async () => {
+    if (activeChatId) return activeChatId;
+    return createNewChat();
+  }, [activeChatId, createNewChat]);
+
+  const handleRenameStart = useCallback((chat: PortalChatListItem) => {
+    setRenamingChatId(chat.id);
+    setRenameDraft(chat.title || "New Chat");
+  }, []);
+
+  const handleRenameSave = useCallback(async (chatId: string) => {
+    const nextTitle = renameDraft.trim() || "New Chat";
+    try {
+      await updatePortalChat(chatId, { title: nextTitle });
+      await refreshChats();
+    } finally {
+      setRenamingChatId(null);
+      setRenameDraft("");
+    }
+  }, [refreshChats, renameDraft]);
+
+  const handleDeleteChat = useCallback(async (chatId: string) => {
+    try {
+      await deletePortalChat(chatId);
+      const list = await refreshChats();
+      if (chatId === activeChatId) {
+        if (list.length > 0) {
+          await openChat(list[0].id);
+        } else {
+          await createNewChat();
+        }
+      }
+    } catch {
+      // Keep UX resilient if delete fails.
+    }
+  }, [activeChatId, createNewChat, openChat, refreshChats]);
+
+  useEffect(() => {
+    let active = true;
+
+    const bootstrap = async () => {
+      try {
+        const list = await refreshChats();
+        if (!active) return;
+
+        if (list.length === 0) {
+          await createNewChat();
+        } else {
+          await openChat(list[0].id);
+        }
+      } catch {
+        if (!active) return;
+        setMessages([]);
+      } finally {
+        if (active) setChatBootstrapped(true);
+      }
+    };
+
+    void bootstrap();
+    return () => {
+      active = false;
+    };
+  }, [createNewChat, openChat, refreshChats, setMessages]);
+
+  useEffect(() => {
+    if (!chatBootstrapped || !activeChatId) return;
+
+    const timeout = setTimeout(async () => {
+      const payload = serializeMessages(messages);
+      const title = deriveTitleFromMessages(messages);
+      try {
+        await updatePortalChat(activeChatId, { title, messages: payload });
+        await refreshChats();
+      } catch {
+        // Ignore save jitter to avoid disrupting active analysis flow.
+      }
+    }, 500);
+
+    return () => clearTimeout(timeout);
+  }, [activeChatId, chatBootstrapped, messages, refreshChats]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -640,6 +829,8 @@ export default function PortalPage() {
   }, []);
 
   async function handleSubmit() {
+    await ensureActiveChat();
+
     // Collect jobs from pending + auto-detect from text input
     const jobsToSubmit = [...pendingJobs];
 
@@ -739,7 +930,7 @@ export default function PortalPage() {
   });
 
   return (
-    <div {...getDropProps()} className="flex flex-col h-full relative">
+    <div {...getDropProps()} className="flex h-full relative">
       {/* Drag overlay */}
       {isDragActive && (
         <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-white/20">
@@ -750,92 +941,208 @@ export default function PortalPage() {
         </div>
       )}
 
-      {/* Chat Feed */}
-      <div ref={feedRef} className="flex-1 overflow-y-auto px-6 py-8">
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mb-6">
-              <Shield size={28} className="text-white/30" />
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Chat Feed */}
+        <div ref={feedRef} className="flex-1 overflow-y-auto px-6 py-8">
+          {messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mb-6">
+                <Shield size={28} className="text-white/30" />
+              </div>
+              <h2 className="text-2xl font-bold text-white/80 mb-2 tracking-tight">ZoraAI Portal</h2>
+              <p className="text-sm text-white/30 max-w-md leading-relaxed">
+                Paste a URL, SMS, email, or upload a file to analyze for security threats. ZoraAI automatically determines which analysis pipelines to run.
+              </p>
+              <div className="flex flex-wrap justify-center gap-2 mt-6">
+                {["Paste a suspicious URL", "Analyze an SMS", "Scan an email", "Upload a file"].map((hint) => (
+                  <span key={hint} className="text-[10px] bg-white/[0.04] text-white/30 px-3 py-1.5 rounded-full border border-white/[0.06] font-medium">
+                    {hint}
+                  </span>
+                ))}
+              </div>
             </div>
-            <h2 className="text-2xl font-bold text-white/80 mb-2 tracking-tight">ZoraAI Portal</h2>
-            <p className="text-sm text-white/30 max-w-md leading-relaxed">
-              Paste a URL, SMS, email, or upload a file to analyze for security threats. ZoraAI automatically determines which analysis pipelines to run.
-            </p>
-            <div className="flex flex-wrap justify-center gap-2 mt-6">
-              {["Paste a suspicious URL", "Analyze an SMS", "Scan an email", "Upload a file"].map((hint) => (
-                <span key={hint} className="text-[10px] bg-white/[0.04] text-white/30 px-3 py-1.5 rounded-full border border-white/[0.06] font-medium">
-                  {hint}
-                </span>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="max-w-3xl mx-auto space-y-6">
-            {messages.map((msg) => {
-              if (msg.role === "user") return <UserMessage key={msg.id} msg={msg} />;
-              if (msg.role === "thinking") return <ThinkingMessage key={msg.id} msg={msg} />;
-              if (msg.role === "result") return <ResultMessage key={msg.id} msg={msg} />;
-              return null;
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Bottom Input Area */}
-      <div className="flex-shrink-0 border-t border-white/[0.06] bg-black/60 backdrop-blur-xl px-6 py-4">
-        <div className="max-w-3xl mx-auto">
-          {/* Job Chips */}
-          {pendingJobs.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-3">
-              {pendingJobs.map((job) => (
-                <JobChip key={job.id} job={job} onRemove={() => removeJob(job.id)} />
-              ))}
+          ) : (
+            <div className="max-w-3xl mx-auto space-y-6">
+              {messages.map((msg) => {
+                if (msg.role === "user") return <UserMessage key={msg.id} msg={msg} />;
+                if (msg.role === "thinking") return <ThinkingMessage key={msg.id} msg={msg} />;
+                if (msg.role === "result") return <ResultMessage key={msg.id} msg={msg} />;
+                return null;
+              })}
             </div>
           )}
+        </div>
 
-          {/* Input Row */}
-          <div className="relative flex items-center gap-2 bg-white/[0.04] border border-white/10 rounded-2xl px-2 py-1.5 focus-within:border-white/20 transition-colors">
-            {/* "+" Button */}
-            <div data-picker className="relative">
-              <button
-                onClick={() => setPickerOpen(!pickerOpen)}
-                className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] flex items-center justify-center transition-colors"
+        {/* Bottom Input Area */}
+        <div className="flex-shrink-0 border-t border-white/[0.06] bg-black/60 backdrop-blur-xl px-6 py-4">
+          <div className="max-w-3xl mx-auto">
+            {/* Job Chips */}
+            {pendingJobs.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {pendingJobs.map((job) => (
+                  <JobChip key={job.id} job={job} onRemove={() => removeJob(job.id)} />
+                ))}
+              </div>
+            )}
+
+            {/* Input Row */}
+            <div className="relative flex items-center gap-2 bg-white/[0.04] border border-white/10 rounded-2xl px-2 py-1.5 focus-within:border-white/20 transition-colors">
+              {/* "+" Button */}
+              <div data-picker className="relative">
+                <button
+                  onClick={() => setPickerOpen(!pickerOpen)}
+                  className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] flex items-center justify-center transition-colors"
+                  disabled={isAnalyzing}
+                >
+                  <Plus size={18} className="text-white/50" />
+                </button>
+                <AttachmentPicker
+                  open={pickerOpen}
+                  onClose={() => setPickerOpen(false)}
+                  onAddJob={(job) => {
+                    addJob(job);
+                    setPickerOpen(false);
+                  }}
+                />
+              </div>
+
+              {/* Text Input */}
+              <input
+                ref={inputRef}
+                value={inputText}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                placeholder="Paste a URL, SMS, email, or describe a threat..."
+                className="flex-1 bg-transparent text-sm text-white placeholder:text-white/25 outline-none py-2 px-1 font-medium"
                 disabled={isAnalyzing}
-              >
-                <Plus size={18} className="text-white/50" />
-              </button>
-              <AttachmentPicker
-                open={pickerOpen}
-                onClose={() => setPickerOpen(false)}
-                onAddJob={(job) => {
-                  addJob(job);
-                  setPickerOpen(false);
-                }}
               />
+
+              {/* Send Button */}
+              <button
+                onClick={handleSubmit}
+                disabled={isAnalyzing && pendingJobs.length === 0 && !inputText.trim()}
+                className="w-9 h-9 rounded-xl bg-orange-500 hover:bg-orange-400 flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <ArrowUp size={18} className="text-white" />
+              </button>
             </div>
-
-            {/* Text Input */}
-            <input
-              ref={inputRef}
-              value={inputText}
-              onChange={handleInputChange}
-              onKeyDown={handleKeyDown}
-              placeholder="Paste a URL, SMS, email, or describe a threat..."
-              className="flex-1 bg-transparent text-sm text-white placeholder:text-white/25 outline-none py-2 px-1 font-medium"
-              disabled={isAnalyzing}
-            />
-
-            {/* Send Button */}
-            <button
-              onClick={handleSubmit}
-              disabled={isAnalyzing && pendingJobs.length === 0 && !inputText.trim()}
-              className="w-9 h-9 rounded-xl bg-orange-500 hover:bg-orange-400 flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <ArrowUp size={18} className="text-white" />
-            </button>
           </div>
         </div>
       </div>
+
+      <aside className={`${isSidebarCollapsed ? "w-14" : "w-80"} border-l border-white/[0.06] bg-white/[0.02] backdrop-blur-xl flex-shrink-0 transition-all duration-200`}>
+        <div className="h-full flex flex-col">
+          <div className="p-3 border-b border-white/[0.06] flex items-center gap-2">
+            <button
+              onClick={() => setIsSidebarCollapsed((v) => !v)}
+              className="h-9 w-9 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-white/70 flex items-center justify-center transition-colors"
+              title={isSidebarCollapsed ? "Expand chats" : "Collapse chats"}
+            >
+              {isSidebarCollapsed ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
+            </button>
+            {!isSidebarCollapsed && (
+              <button
+                onClick={() => {
+                  void createNewChat();
+                }}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-orange-500 hover:bg-orange-400 text-white text-sm font-semibold py-2.5 transition-colors"
+              >
+                <Plus size={16} />
+                New Chat
+              </button>
+            )}
+          </div>
+          {!isSidebarCollapsed && (
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {!chatBootstrapped && (
+              <p className="text-xs text-white/30 px-2 py-1">Loading chats...</p>
+            )}
+            {chatBootstrapped && chats.length === 0 && (
+              <p className="text-xs text-white/30 px-2 py-1">No chats yet</p>
+            )}
+            {chats.map((chat) => {
+              const isRenaming = renamingChatId === chat.id;
+              return (
+                <div
+                  key={chat.id}
+                  className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors ${
+                    activeChatId === chat.id
+                      ? "bg-white/[0.07] border-white/20"
+                      : "bg-transparent border-white/[0.08] hover:bg-white/[0.04] hover:border-white/15"
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <button
+                      onClick={() => {
+                        void openChat(chat.id);
+                      }}
+                      className="flex-1 min-w-0 text-left"
+                    >
+                      {isRenaming ? (
+                        <input
+                          value={renameDraft}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void handleRenameSave(chat.id);
+                            }
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              setRenamingChatId(null);
+                              setRenameDraft("");
+                            }
+                          }}
+                          className="w-full bg-black/30 border border-white/20 rounded-md px-2 py-1 text-sm text-white/90 outline-none"
+                          autoFocus
+                        />
+                      ) : (
+                        <p className="text-sm font-semibold text-white/80 truncate">{chat.title || "New Chat"}</p>
+                      )}
+                      <p className="text-[11px] text-white/35 mt-1 line-clamp-2">{chat.preview || "No messages yet"}</p>
+                    </button>
+                    <div className="flex items-center gap-1">
+                      {isRenaming ? (
+                        <button
+                          onClick={() => {
+                            void handleRenameSave(chat.id);
+                          }}
+                          className="h-7 w-7 rounded-md text-emerald-300 hover:bg-white/[0.08] flex items-center justify-center"
+                          title="Save rename"
+                        >
+                          <Check size={14} />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleRenameStart(chat)}
+                          className="h-7 w-7 rounded-md text-white/45 hover:text-white/75 hover:bg-white/[0.08] flex items-center justify-center"
+                          title="Rename chat"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          void handleDeleteChat(chat.id);
+                        }}
+                        className="h-7 w-7 rounded-md text-red-300/75 hover:text-red-200 hover:bg-red-500/10 flex items-center justify-center"
+                        title="Delete chat"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-[10px] text-white/30 uppercase tracking-wider font-semibold">
+                    <span>{chat.message_count} messages</span>
+                    <span>{formatChatDate(chat.updated_at)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          )}
+        </div>
+      </aside>
     </div>
   );
 }

@@ -52,6 +52,7 @@ interface PortalStore {
   clearJobs: () => void;
 
   addMessage: (msg: Message) => void;
+  setMessages: (msgs: Message[]) => void;
   updateThinkingMessage: (id: string, text: string) => void;
   replaceThinkingWithResult: (id: string, result: AggregatedResult) => void;
 
@@ -79,6 +80,8 @@ export const usePortalStore = create<PortalStore>((set) => ({
 
   addMessage: (msg) =>
     set((s) => ({ messages: [...s.messages, msg] })),
+
+  setMessages: (msgs) => set({ messages: msgs }),
 
   updateThinkingMessage: (id, text) =>
     set((s) => ({

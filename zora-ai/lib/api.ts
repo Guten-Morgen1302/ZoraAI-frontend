@@ -74,4 +74,15 @@ export const getAttachmentDetail = (id: string) =>
 export const getVoiceDetail = (id: string) =>
   api.get(`/voice/history/${id}`);
 
+// ─── Portal Chats ───
+export const getPortalChats = () => api.get("/portal/chats");
+export const getPortalChat = (id: string) => api.get(`/portal/chats/${id}`);
+export const createPortalChat = (payload?: { title?: string; messages?: Record<string, unknown>[] }) =>
+  api.post("/portal/chats", payload ?? {});
+export const updatePortalChat = (
+  id: string,
+  payload: { title?: string; messages?: Record<string, unknown>[] }
+) => api.put(`/portal/chats/${id}`, payload);
+export const deletePortalChat = (id: string) => api.delete(`/portal/chats/${id}`);
+
 export default api;
