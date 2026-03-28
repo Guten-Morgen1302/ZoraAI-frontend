@@ -62,7 +62,7 @@ const navItems = [
     ),
   },
   {
-    name: "Attachment Sandbox",
+    name: "Attachment Analysis",
     href: "/home/attachments",
     live: true,
     icon: (
