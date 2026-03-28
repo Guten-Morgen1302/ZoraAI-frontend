@@ -483,6 +483,14 @@ function ThreatCard({ result }: { result: PipelineResult }) {
   }
 
   const requestId = data.request_id as string | undefined;
+  const clamavSignature =
+    result.type === "attachment" &&
+    data.engines &&
+    typeof data.engines === "object" &&
+    (data.engines as Record<string, unknown>).clamav &&
+    typeof (data.engines as Record<string, unknown>).clamav === "object"
+      ? ((data.engines as Record<string, unknown>).clamav as Record<string, unknown>).signature
+      : undefined;
 
   if (result.status === "rejected") {
     return (
@@ -537,6 +545,12 @@ function ThreatCard({ result }: { result: PipelineResult }) {
       {/* Explanation */}
       {explanation && (
         <p className="text-xs text-white/40 leading-relaxed line-clamp-3">{explanation}</p>
+      )}
+
+      {typeof clamavSignature === "string" && clamavSignature.trim() && (
+        <p className="text-[11px] text-white/45 leading-relaxed mt-2 break-all">
+          ClamAV Signature: <span className="text-white/65">{clamavSignature}</span>
+        </p>
       )}
 
       {/* View Report Link */}

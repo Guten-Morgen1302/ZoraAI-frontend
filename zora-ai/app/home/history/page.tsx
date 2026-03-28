@@ -93,6 +93,13 @@ function getPreview(tab: TabKey, item: Record<string, unknown>): string {
   return "—";
 }
 
+function getAttachmentSignature(item: Record<string, unknown>): string | null {
+  const signature = item.clamav_signature;
+  if (typeof signature !== "string") return null;
+  const trimmed = signature.trim();
+  return trimmed ? trimmed : null;
+}
+
 function HistoryContent() {
   const searchParams = useSearchParams();
   const initialTab = (searchParams.get("type") as TabKey) || "sms";
@@ -211,6 +218,7 @@ function HistoryContent() {
 
               {items.map((item) => {
                 const id = String(item.request_id ?? "");
+                const attachmentSignature = activeTab === "attachment" ? getAttachmentSignature(item) : null;
                 return (
                   <button
                     key={id}
@@ -221,8 +229,13 @@ function HistoryContent() {
                         : "hover:bg-white/[0.03] border border-transparent"
                     }`}
                   >
-                    <span className="text-xs text-white/60 font-medium truncate">
-                      {getPreview(activeTab, item)}
+                    <span className="text-xs text-white/60 font-medium min-w-0">
+                      <span className="block truncate">{getPreview(activeTab, item)}</span>
+                      {attachmentSignature && (
+                        <span className="inline-flex max-w-full mt-1 text-[9px] font-bold px-2 py-0.5 rounded-full border border-cyan-500/25 bg-cyan-500/12 text-cyan-300">
+                          <span className="truncate">ClamAV: {attachmentSignature}</span>
+                        </span>
+                      )}
                     </span>
                     <span>{getVerdictBadge(item)}</span>
                     <span>{getScoreDisplay(item)}</span>
@@ -270,6 +283,19 @@ function HistoryContent() {
 }
 
 function DetailView({ data }: { data: Record<string, unknown>; type: TabKey }) {
+  const engineEntries =
+    data.engines && typeof data.engines === "object"
+      ? Object.entries(data.engines as Record<string, unknown>)
+      : [];
+  const clamavEngine =
+    data.engines && typeof data.engines === "object"
+      ? ((data.engines as Record<string, unknown>).clamav as Record<string, unknown> | undefined)
+      : undefined;
+  const clamavSignature =
+    clamavEngine && typeof clamavEngine.signature === "string"
+      ? clamavEngine.signature
+      : null;
+
   const entries = Object.entries(data).filter(
     ([k]) => !["features", "fused_features", "url_features", "domain_features", "tls_features",
       "homoglyph_features", "sandbox_features", "cookie_features", "phishing_behavior_features",
@@ -309,6 +335,41 @@ function DetailView({ data }: { data: Record<string, unknown>; type: TabKey }) {
         <div className="bg-white/[0.03] border border-white/[0.08] rounded-xl p-4">
           <p className="text-[10px] text-white/30 uppercase tracking-wider font-semibold mb-2">AI Explanation</p>
           <p className="text-xs text-white/50 leading-relaxed">{String(data.llm_explanation)}</p>
+        </div>
+      ) : null}
+
+      {/* ClamAV Signature */}
+      {clamavSignature ? (
+        <div className="bg-white/[0.03] border border-white/[0.08] rounded-xl p-4">
+          <p className="text-[10px] text-white/30 uppercase tracking-wider font-semibold mb-2">ClamAV Signature</p>
+          <p className="text-xs text-white/65 break-all font-mono">{clamavSignature}</p>
+        </div>
+      ) : null}
+
+      {/* Engine Details */}
+      {engineEntries.length > 0 ? (
+        <div className="bg-white/[0.03] border border-white/[0.08] rounded-xl p-4 space-y-2">
+          <p className="text-[10px] text-white/30 uppercase tracking-wider font-semibold mb-2">Engine Details</p>
+          {engineEntries.map(([engineName, enginePayload]) => {
+            if (!enginePayload || typeof enginePayload !== "object") return null;
+            const payload = enginePayload as Record<string, unknown>;
+            return (
+              <div key={engineName} className="rounded-lg border border-white/[0.08] bg-black/25 px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-white/55">{engineName}</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${payload.is_flagged ? "bg-red-500/15 text-red-400" : "bg-emerald-500/15 text-emerald-400"}`}>
+                    {payload.is_flagged ? "FLAGGED" : "CLEAN"}
+                  </span>
+                </div>
+                {typeof payload.signature === "string" && payload.signature ? (
+                  <p className="text-[11px] text-white/60 break-all mt-1">Signature: {payload.signature}</p>
+                ) : null}
+                {typeof payload.score === "number" ? (
+                  <p className="text-[11px] text-white/60 mt-1">Score: {Number(payload.score).toFixed(4)}</p>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       ) : null}
 
