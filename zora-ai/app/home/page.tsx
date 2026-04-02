@@ -53,7 +53,7 @@ const modules = [
     ),
   },
   {
-    name: "Attachment Sandbox",
+    name: "Attachment Analysis",
     description: "Static file analysis — YARA signatures, ClamAV antivirus, LightGBM PE classifier, type-specific parsers.",
     href: "/home/attachments",
     live: true,

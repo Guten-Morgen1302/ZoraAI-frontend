@@ -6,13 +6,15 @@ import {
   CategoryScale,
   LinearScale,
   BarElement,
-  ArcElement,
+  RadialLinearScale,
+  PointElement,
+  LineElement,
   Tooltip,
   Legend,
 } from "chart.js";
-import { Bar, Doughnut } from "react-chartjs-2";
+import { Bar, Radar } from "react-chartjs-2";
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, BarElement, RadialLinearScale, PointElement, LineElement, Tooltip, Legend);
 
 interface AttachmentEngineResult {
   is_flagged: boolean;
@@ -115,6 +117,24 @@ export default function AttachmentAnalyzerPage() {
   const [historyDeletingId, setHistoryDeletingId] = useState<string | null>(null);
   const [historyClearing, setHistoryClearing] = useState(false);
   const [pendingHistoryAction, setPendingHistoryAction] = useState<{ type: "delete" | "clear"; requestId?: string } | null>(null);
+  const [pipelineStatus, setPipelineStatus] = useState<string>("");
+
+  const analysisStages = ["YARA is processing", "ClamAV is scanning", "EMBER model is processing"];
+  const statusToStageIndex: Record<string, number> = {
+    queued: 0,
+    processing: 0,
+    processing_yara: 0,
+    processing_clamav: 1,
+    processing_ember: 2,
+    processing_llm: 2,
+    completed: 3,
+    failed: 3,
+  };
+
+  const getStageIndex = (status: string) => {
+    if (!status) return -1;
+    return statusToStageIndex[status] ?? 0;
+  };
 
   useEffect(() => {
     fetch("http://localhost:8000/attachment/history", { credentials: "include" })
@@ -253,6 +273,24 @@ export default function AttachmentAnalyzerPage() {
     return normalized.slice(0, 10);
   }, [result]);
 
+  const featureVizRows = useMemo(() => {
+    if (featureTopRows.length === 0) return [];
+
+    const logScaled = featureTopRows.map((item) => {
+      const logMagnitude = Math.log10(Math.abs(item.value) + 1);
+      return {
+        ...item,
+        logMagnitude,
+      };
+    });
+
+    const maxLog = Math.max(...logScaled.map((item) => item.logMagnitude), 1);
+    return logScaled.map((item) => ({
+      ...item,
+      normalizedMagnitude: item.logMagnitude / maxLog,
+    }));
+  }, [featureTopRows]);
+
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -284,6 +322,7 @@ export default function AttachmentAnalyzerPage() {
     setLoading(true);
     setError("");
     setResult(null);
+    setPipelineStatus("queued");
 
     try {
       const formData = new FormData();
@@ -303,7 +342,36 @@ export default function AttachmentAnalyzerPage() {
 
       const data: AttachmentAnalyzeResponse = await res.json();
       setResult(data);
-      setSelectedHistoryRequestId(null);
+      setPipelineStatus((data.status || "processing").toLowerCase());
+
+      if (!data.request_id) {
+        throw new Error("Attachment analysis started but request_id is missing.");
+      }
+
+      setSelectedHistoryRequestId(data.request_id);
+
+      let attempts = 0;
+      while (attempts < 240) {
+        attempts += 1;
+        await new Promise((resolve) => setTimeout(resolve, 750));
+
+        const detailRes = await fetch(`http://localhost:8000/attachment/history/${data.request_id}`, {
+          credentials: "include",
+        });
+        if (!detailRes.ok) {
+          continue;
+        }
+
+        const detail: AttachmentAnalyzeResponse = await detailRes.json();
+        setResult(detail);
+        const liveStatus = (detail.status || "").toLowerCase();
+        setPipelineStatus(liveStatus);
+
+        if (liveStatus === "completed" || liveStatus === "failed") {
+          break;
+        }
+      }
+
       fetch("http://localhost:8000/attachment/history", { credentials: "include" })
         .then((r) => (r.ok ? r.json() : []))
         .then(setHistory)
@@ -312,6 +380,7 @@ export default function AttachmentAnalyzerPage() {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+      setPipelineStatus("");
     }
   };
 
@@ -353,26 +422,58 @@ export default function AttachmentAnalyzerPage() {
     },
   };
 
-  const verdictDonutData = {
-    labels: ["Flagged Engines", "Non-Flagged Engines"],
+  const engineRadarData = {
+    labels: engineScoreRows.map((r) => r.name),
     datasets: [
       {
-        data: [flaggedCount, Math.max(engineEntries.length - flaggedCount, 0)],
-        backgroundColor: ["rgba(239,68,68,0.85)", "rgba(34,197,94,0.8)"],
-        borderColor: ["rgba(239,68,68,1)", "rgba(34,197,94,1)"],
-        borderWidth: 1,
+        label: "Engine Confidence Profile",
+        data: engineScoreRows.map((r) => r.value),
+        backgroundColor: "rgba(56,189,248,0.22)",
+        borderColor: "rgba(56,189,248,0.95)",
+        borderWidth: 2,
+        pointBackgroundColor: engineScoreRows.map((r) => (r.value >= 0.75 ? "#ef4444" : r.value >= 0.4 ? "#f59e0b" : "#22c55e")),
+        pointBorderColor: "rgba(12,18,31,1)",
+        pointBorderWidth: 1,
+        pointRadius: 4,
       },
     ],
   };
 
+  const engineRadarOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      r: {
+        min: 0,
+        max: 1,
+        ticks: {
+          display: false,
+        },
+        angleLines: { color: "rgba(255,255,255,0.09)" },
+        grid: { color: "rgba(255,255,255,0.08)" },
+        pointLabels: { color: "rgba(255,255,255,0.65)", font: { size: 11, weight: 600 as const } },
+      },
+    },
+    plugins: {
+      legend: { labels: { color: "rgba(255,255,255,0.7)" } },
+      tooltip: { enabled: true },
+    },
+  };
+
   const featureBarData = {
-    labels: featureTopRows.map((r) => r.key.split(".").slice(-2).join(".")),
+    labels: featureVizRows.map((r) => r.key.split(".").slice(-2).join(".")),
     datasets: [
       {
-        label: "Feature Magnitude",
-        data: featureTopRows.map((r) => r.value),
-        backgroundColor: "rgba(56,189,248,0.75)",
-        borderColor: "rgba(56,189,248,1)",
+        label: "Normalized Feature Magnitude",
+        data: featureVizRows.map((r) => r.normalizedMagnitude),
+        backgroundColor: featureVizRows.map((r) =>
+          r.normalizedMagnitude >= 0.8
+            ? "rgba(14,165,233,0.85)"
+            : r.normalizedMagnitude >= 0.5
+            ? "rgba(56,189,248,0.78)"
+            : "rgba(125,211,252,0.72)"
+        ),
+        borderColor: "rgba(186,230,253,0.95)",
         borderWidth: 1,
         borderRadius: 6,
       },
@@ -388,13 +489,28 @@ export default function AttachmentAnalyzerPage() {
         grid: { color: "rgba(255,255,255,0.04)" },
       },
       y: {
-        ticks: { color: "rgba(255,255,255,0.35)", font: { size: 11 } },
+        min: 0,
+        max: 1,
+        ticks: {
+          color: "rgba(255,255,255,0.35)",
+          font: { size: 11 },
+          callback: (value: string | number) => `${Math.round(Number(value) * 100)}%`,
+        },
         grid: { color: "rgba(255,255,255,0.04)" },
       },
     },
     plugins: {
       legend: { display: false },
-      tooltip: { enabled: true },
+      tooltip: {
+        enabled: true,
+        callbacks: {
+          label: (context: { dataIndex: number; parsed: { y: number } }) => {
+            const row = featureVizRows[context.dataIndex];
+            if (!row) return `Normalized: ${(context.parsed.y * 100).toFixed(1)}%`;
+            return `Normalized: ${(context.parsed.y * 100).toFixed(1)}% | Raw: ${row.value.toLocaleString()}`;
+          },
+        },
+      },
     },
   };
 
@@ -402,7 +518,7 @@ export default function AttachmentAnalyzerPage() {
     <div className="flex h-full">
       <div className="flex-1 overflow-y-auto p-8 md:p-10 space-y-8">
       <section>
-        <h1 className="text-2xl font-bold tracking-tight mb-1">Attachment Sandbox Analyzer</h1>
+        <h1 className="text-2xl font-bold tracking-tight mb-1">Attachment Analysis</h1>
         <p className="text-white/40 text-sm font-medium mb-6">
           Upload files to run static threat analysis with YARA, ClamAV, and ML scoring engines.
         </p>
@@ -495,6 +611,43 @@ export default function AttachmentAnalyzerPage() {
             </button>
           </div>
 
+          {loading && (
+            <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-4">
+              <p className="text-xs font-bold uppercase tracking-widest text-cyan-300/85 mb-3">Pipeline Progress</p>
+              <div className="space-y-2.5">
+                {analysisStages.map((stage, idx) => {
+                  const activeStageIndex = getStageIndex(pipelineStatus);
+                  const completed = idx < activeStageIndex;
+                  const active = idx === activeStageIndex && activeStageIndex < analysisStages.length;
+                  return (
+                    <div key={stage} className="flex items-center gap-2.5 text-xs">
+                      <span
+                        className={`inline-block w-2.5 h-2.5 rounded-full ${
+                          completed
+                            ? "bg-emerald-400"
+                            : active
+                            ? "bg-cyan-300 animate-pulse"
+                            : "bg-white/25"
+                        }`}
+                      />
+                      <span
+                        className={`font-semibold tracking-wide ${
+                          completed
+                            ? "text-emerald-300"
+                            : active
+                            ? "text-cyan-200"
+                            : "text-white/45"
+                        }`}
+                      >
+                        {stage}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {error && <div className="px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm font-medium">{error}</div>}
         </div>
       </section>
@@ -536,15 +689,9 @@ export default function AttachmentAnalyzerPage() {
               </div>
             </div>
             <div className="rounded-2xl border border-white/8 bg-white/2 p-6">
-              <h3 className="text-sm font-bold tracking-wider uppercase text-white/50 mb-5">Flagged vs Non-Flagged</h3>
+              <h3 className="text-sm font-bold tracking-wider uppercase text-white/50 mb-5">Engine Confidence Profile</h3>
               <div className="h-72 flex items-center justify-center">
-                <Doughnut data={verdictDonutData} options={{
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: {
-                    legend: { labels: { color: "rgba(255,255,255,0.7)" } },
-                  },
-                }} />
+                <Radar data={engineRadarData} options={engineRadarOptions} />
               </div>
             </div>
           </div>
@@ -583,7 +730,8 @@ export default function AttachmentAnalyzerPage() {
 
           {featureTopRows.length > 0 && (
             <div className="rounded-2xl border border-white/8 bg-white/2 p-6">
-              <h3 className="text-sm font-bold tracking-wider uppercase text-white/50 mb-5">Top Numeric Features</h3>
+              <h3 className="text-sm font-bold tracking-wider uppercase text-white/50 mb-2">Top Numeric Features</h3>
+              <p className="text-[11px] text-white/35 font-medium mb-5">Log-normalized for readability. Hover bars to view raw values.</p>
               <div className="h-80">
                 <Bar data={featureBarData} options={featureBarOptions} />
               </div>
